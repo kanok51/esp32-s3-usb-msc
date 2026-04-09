@@ -4,10 +4,10 @@
  * Features:
  * - FTP server on port 21 (anonymous login)
  * - Files stored on internal SPIFFS flash (2MB partition)
- * - WiFi Access Point mode
+ * - WiFi Station mode - connects to home router
  * - USBMSC still active for disk enumeration
  * 
- * Wiring: Same as PR #1 for SD card (optional)
+ * WiFi: pukushome_fritz / amarnetamikhabo
  */
 
 #include <Arduino.h>
@@ -15,12 +15,12 @@
 #include <SPIFFS.h>
 #include <FTPServer.h>
 
-// WiFi Access Point Configuration
+// WiFi Configuration (from platformio.ini build_flags)
 #ifndef WIFI_SSID
-#define WIFI_SSID "ESP32-FTP"
+#define WIFI_SSID "pukushome_fritz"
 #endif
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "12345678"
+#define WIFI_PASSWORD "amarnetamikhabo"
 #endif
 
 #define FTP_PORT 21
@@ -29,29 +29,52 @@
 // FTP Server Instance
 FTPServer ftpServer;
 
-static void setup_wifi_ap(void) {
-    Serial.println("\n[WiFi] Starting Access Point...");
-    Serial.printf("  SSID: %s\n", WIFI_SSID);
-    Serial.printf("  Password: %s\n", WIFI_PASSWORD);
-    
-    // Configure for AP mode
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
-    
-    IPAddress IP = WiFi.softAPIP();
-    Serial.printf("[WiFi] AP IP address: %s\n", IP.toString().c_str());
-    Serial.printf("[WiFi] FTP Server ready at: ftp://%s:%d\n", IP.toString().c_str(), FTP_PORT);
+// WiFi event handler
+void WiFiEvent(WiFiEvent_t event) {
+    switch (event) {
+        case ARDUINO_EVENT_WIFI_STA_START:
+            Serial.println("[WiFi] Station started");
+            break;
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            Serial.println("[WiFi] Connected to AP");
+            break;
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Serial.printf("[WiFi] Got IP: %s\n", WiFi.localIP().toString().c_str());
+            break;
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            Serial.println("[WiFi] Disconnected");
+            break;
+        default:
+            break;
+    }
 }
 
-static void rainbow_led_demo(void) {
-    // Rainbow LED demo cycle
-    static uint8_t hue = 0;
-    static uint32_t last_update = 0;
+static void setup_wifi_station(void) {
+    Serial.println("\n[WiFi] Connecting to station mode...");
+    Serial.printf("  SSID: %s\n", WIFI_SSID);
     
-    if (millis() - last_update > 50) {
-        last_update = millis();
-        hue += 2;
-        if (hue > 360) hue = 0;
+    WiFi.onEvent(WiFiEvent);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    // Wait for connection
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    Serial.println();
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[WiFi] Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+        Serial.printf("[WiFi] FTP Server ready at: ftp://%s:%d\n", WiFi.localIP().toString().c_str(), FTP_PORT);
+    } else {
+        Serial.println("[WiFi] Failed to connect - starting AP fallback");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("ESP32-FTP", "12345678");
+        Serial.printf("[WiFi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
     }
 }
 
@@ -77,14 +100,14 @@ void setup() {
     Serial.println("\n");
     Serial.println("╔══════════════════════════════════════════════════╗");
     Serial.println("║   ESP32-S3 FTP Server (PR #2)              ║");
-    Serial.println("║   Internal Flash FAT (SPIFFS)              ║");
+    Serial.println("║   WiFi Station + SPIFFS Flash             ║");
     Serial.println("╚══════════════════════════════════════════════════╝");
     
     // Initialize SPIFFS
     setup_spiffs();
     
-    // Setup WiFi AP
-    setup_wifi_ap();
+    // Setup WiFi Station
+    setup_wifi_station();
     
     // Initialize FTP Server with SPIFFS
     Serial.println("\n[FTP] Starting FTP server...");
@@ -94,8 +117,8 @@ void setup() {
     if (ftpServer.begin()) {
         Serial.println("[FTP] FTP server started successfully!");
         Serial.println("[FTP] Connect with any FTP client:");
-        Serial.println("[FTP]   Host: ESP32-FTP.local or 192.168.4.1");
-        Serial.println("[FTP]   Port: 21");
+        Serial.printf("[FTP]   Host: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[FTP]   Port: %d\n", FTP_PORT);
         Serial.println("[FTP]   User: anonymous");
         Serial.println("[FTP]   Pass: (empty)");
     } else {
@@ -103,7 +126,6 @@ void setup() {
     }
     
     Serial.println("\n[System] Setup complete - FTP server running");
-    Serial.println("[System] USB mass storage can be added via USBMSC");
 }
 
 void loop() {
@@ -116,12 +138,10 @@ void loop() {
     delay(5000);
     tick++;
     
-    // Rainbow LED demo (show system is alive)
-    rainbow_led_demo();
-    
     if (tick % 4 == 0) {  // Every 20 seconds
-        Serial.printf("[Tick %u] FTP server active | ", tick / 2);
-        Serial.printf("Clients: %d | ", ftpServer.numberOfConnectedClients());
+        Serial.printf("[Tick %u] FTP active | ", tick / 2);
+        Serial.printf("IP: %s | ", WiFi.localIP().toString().c_str());
+        Serial.printf("RSSI: %d dBm | ", WiFi.RSSI());
         Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
     }
 }
