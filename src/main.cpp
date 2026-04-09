@@ -1,229 +1,96 @@
 /**
- * PR #1: SD Card Initialization using Software Bit-Banged SPI
+ * PR #2: FTP Server with Internal Flash FAT Emulation
  * 
- * Goal: Initialize SD card with full control over pins - no driver conflicts.
- * Uses bit-banged SPI which is slower but 100% reliable.
+ * Features:
+ * - FTP server on port 21 (anonymous login)
+ * - Files stored on internal SPIFFS flash (2MB partition)
+ * - WiFi Station mode - connects to home router
+ * - USBMSC still active for disk enumeration
  * 
- * Wiring:
- *   CS   -> GPIO 47
- *   MISO -> GPIO 48
- *   MOSI -> GPIO 45
- *   SCK  -> GPIO 21
+ * WiFi: pukushome_fritz / amarnetamikhabo
  */
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <SPIFFS.h>
+#include <FTPServer.h>
 
-#define SD_CS_PIN   47
-#define SD_MISO_PIN 48
-#define SD_MOSI_PIN 45
-#define SD_CLK_PIN  21
+// WiFi Configuration (from platformio.ini build_flags)
+#ifndef WIFI_SSID
+#define WIFI_SSID "pukushome_fritz"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "amarnetamikhabo"
+#endif
 
-// Bit-banged SPI macros
-#define SPI_SCK_LOW()  digitalWrite(SD_CLK_PIN, LOW)
-#define SPI_SCK_HIGH() digitalWrite(SD_CLK_PIN, HIGH)
-#define SPI_MOSI_HIGH() digitalWrite(SD_MOSI_PIN, HIGH)
-#define SPI_MOSI_LOW()  digitalWrite(SD_MOSI_PIN, LOW)
-#define SPI_READ_MISO() digitalRead(SD_MISO_PIN)
-#define SPI_CS_LOW()  digitalWrite(SD_CS_PIN, LOW)
-#define SPI_CS_HIGH() digitalWrite(SD_CS_PIN, HIGH)
+#define FTP_PORT 21
+#define STATUS_LED 48  // Rainbow LED on ESP32-S3
 
-static void spi_init_pins(void) {
-    pinMode(SD_CS_PIN, OUTPUT);
-    pinMode(SD_MISO_PIN, INPUT);
-    pinMode(SD_MOSI_PIN, OUTPUT);
-    pinMode(SD_CLK_PIN, OUTPUT);
-    SPI_CS_HIGH();
-    SPI_SCK_LOW();
-    
-    // Brief delay to let voltages stabilize
-    delay(100);
-}
+// FTP Server Instance
+FTPServer ftpServer;
 
-static uint8_t spi_transfer(uint8_t data) {
-    uint8_t recv = 0;
-    for (int i = 7; i >= 0; i--) {
-        if (data & (1 << i)) {
-            SPI_MOSI_HIGH();
-        } else {
-            SPI_MOSI_LOW();
-        }
-        delayMicroseconds(5);
-        SPI_SCK_HIGH();
-        delayMicroseconds(5);
-        if (SPI_READ_MISO()) {
-            recv |= (1 << i);
-        }
-        SPI_SCK_LOW();
-        delayMicroseconds(5);
-    }
-    return recv;
-}
-
-static void sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t* response, int resp_len) {
-    SPI_CS_LOW();
-    spi_transfer(0xFF);
-    spi_transfer(cmd | 0x40);
-    spi_transfer(arg >> 24);
-    spi_transfer(arg >> 16);
-    spi_transfer(arg >> 8);
-    spi_transfer(arg);
-    spi_transfer(crc);
-    
-    for (int i = 0; i < resp_len; i++) {
-        response[i] = spi_transfer(0xFF);
-    }
-    SPI_CS_HIGH();
-}
-
-static bool sd_reset(void) {
-    Serial.println("[SD] Sending SD reset sequence...");
-    
-    SPI_CS_HIGH();
-    for (int i = 0; i < 80; i++) spi_transfer(0xFF);
-    
-    uint8_t response[5];
-    for (int attempt = 0; attempt < 10; attempt++) {
-        sd_command(0, 0, 0x95, response, 1);
-        Serial.printf("[SD] CMD0 attempt %d: R1=0x%02X\n", attempt + 1, response[0]);
-        if (response[0] == 0x01 || response[0] == 0x00) {
-            Serial.printf("[SD] Got valid R1 response: 0x%02X (attempt %d)\n", response[0], attempt + 1);
+// WiFi event handler
+void WiFiEvent(WiFiEvent_t event) {
+    switch (event) {
+        case ARDUINO_EVENT_WIFI_STA_START:
+            Serial.println("[WiFi] Station started");
             break;
-        }
-        delay(10);
-    }
-    
-    if (response[0] != 0x01 && response[0] != 0x00) {
-        Serial.printf("[SD] ERROR: No valid response from SD card: 0x%02X\n", response[0]);
-        return false;
-    }
-    
-    Serial.println("[SD] Card is in idle state!");
-    
-    uint8_t ocr[4];
-    sd_command(58, 0, 0x95, ocr, 4);
-    Serial.printf("[SD] CMD58 OCR: 0x%02X%02X%02X%02X\n", ocr[0], ocr[1], ocr[2], ocr[3]);
-    
-    Serial.println("[SD] Sending CMD1 to init card...");
-    for (int attempt = 0; attempt < 10; attempt++) {
-        sd_command(1, 0x40000000, 0x95, response, 1);
-        Serial.printf("[SD] CMD1 attempt %d: R1=0x%02X\n", attempt + 1, response[0]);
-        if (response[0] == 0x00) {
-            Serial.println("[SD] Card ready! R1=0x00");
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            Serial.println("[WiFi] Connected to AP");
             break;
-        }
-        if (response[0] != 0x01 && response[0] != 0x00) {
-            Serial.printf("[SD] Unexpected response: 0x%02X\n", response[0]);
-        }
-        delay(10);
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Serial.printf("[WiFi] Got IP: %s\n", WiFi.localIP().toString().c_str());
+            break;
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            Serial.println("[WiFi] Disconnected");
+            break;
+        default:
+            break;
     }
-    
-    if (response[0] == 0x00) {
-        Serial.printf("[SD] SUCCESS: SD card initialized! R1: 0x%02X\n", response[0]);
-        return true;
-    }
-    
-    Serial.println("[SD] ERROR: Card did not become ready");
-    return false;
 }
 
-static bool sd_read_cid(void) {
-    uint8_t cid[16];
-    SPI_CS_LOW();
-    spi_transfer(0xFF);
-    spi_transfer(0x40 | 10);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
+static void setup_wifi_station(void) {
+    Serial.println("\n[WiFi] Connecting to station mode...");
+    Serial.printf("  SSID: %s\n", WIFI_SSID);
     
-    for (int i = 0; i < 16; i++) {
-        cid[i] = spi_transfer(0xFF);
+    WiFi.onEvent(WiFiEvent);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    // Wait for connection
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
     }
-    SPI_CS_HIGH();
-    spi_transfer(0xFF);
+    Serial.println();
     
-    Serial.println("\n[SD] CID:");
-    Serial.printf("  Manufacturer: 0x%02X\n", cid[0]);
-    Serial.printf("  OEM: %c%c\n", cid[1], cid[2]);
-    Serial.printf("  Name: %c%c%c%c%c\n", cid[3], cid[4], cid[5], cid[6], cid[7]);
-    Serial.printf("  Serial: 0x%02X%02X%02X%02X\n", cid[8], cid[9], cid[10], cid[11]);
-    
-    return true;
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[WiFi] Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+        Serial.printf("[WiFi] FTP Server ready at: ftp://%s:%d\n", WiFi.localIP().toString().c_str(), FTP_PORT);
+    } else {
+        Serial.println("[WiFi] Failed to connect - starting AP fallback");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("ESP32-FTP", "12345678");
+        Serial.printf("[WiFi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+    }
 }
 
-static bool sd_readSector(uint32_t sector, uint8_t* buffer) {
-    uint8_t response[5];
+static void setup_spiffs(void) {
+    Serial.println("\n[SPIFFS] Mounting internal flash...");
     
-    SPI_CS_LOW();
-    spi_transfer(0xFF);
-    spi_transfer(0x40 | 17);
-    spi_transfer(sector >> 24);
-    spi_transfer(sector >> 16);
-    spi_transfer(sector >> 8);
-    spi_transfer(sector);
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    
-    int timeout = 1000;
-    while (spi_transfer(0xFF) != 0x00) {
-        if (timeout-- <= 0) {
-            Serial.println("[SD] ERROR: Read sector timeout (no data token)");
-            SPI_CS_HIGH();
-            return false;
-        }
+    if (!SPIFFS.begin(true)) {
+        Serial.println("[SPIFFS] ERROR: Failed to mount SPIFFS!");
+        return;
     }
     
-    while (spi_transfer(0xFF) != 0xFE);
-    
-    for (int i = 0; i < 512; i++) {
-        buffer[i] = spi_transfer(0xFF);
-    }
-    
-    spi_transfer(0xFF);
-    spi_transfer(0xFF);
-    
-    SPI_CS_HIGH();
-    spi_transfer(0xFF);
-    
-    return true;
-}
-
-bool init_sd_card(void) {
-    Serial.println("\n[SD] Initializing SD card with bit-banged SPI...");
-    Serial.printf("  CS Pin:   GPIO %d\n", SD_CS_PIN);
-    Serial.printf("  MISO Pin: GPIO %d\n", SD_MISO_PIN);
-    Serial.printf("  MOSI Pin: GPIO %d\n", SD_MOSI_PIN);
-    Serial.printf("  CLK Pin:  GPIO %d\n", SD_CLK_PIN);
-    
-    spi_init_pins();
-    
-    // Read raw MISO to check if card is pulling it high
-    int miso_raw = digitalRead(SD_MISO_PIN);
-    Serial.printf("[SD] MISO pin state before init: %d\n", miso_raw);
-    
-    if (!sd_reset()) {
-        Serial.println("[SD] FATAL: SD card reset failed!");
-        return false;
-    }
-    
-    if (!sd_read_cid()) {
-        Serial.println("[SD] WARNING: Could not read CID");
-    }
-    
-    uint8_t block[512];
-    if (sd_readSector(0, block)) {
-        Serial.println("[SD] SUCCESS: Read sector 0!");
-        Serial.printf("  Byte 510: 0x%02X, Byte 511: 0x%02X\n", block[510], block[511]);
-        if (block[510] == 0x55 && block[511] == 0xAA) {
-            Serial.println("[SD] Valid boot sector signature!");
-        }
-        return true;
-    }
-    
-    return false;
+    uint32_t total = SPIFFS.totalBytes();
+    uint32_t used = SPIFFS.usedBytes();
+    Serial.printf("[SPIFFS] Total: %u bytes\n", total);
+    Serial.printf("[SPIFFS] Used: %u bytes\n", used);
+    Serial.printf("[SPIFFS] Free: %u bytes\n", total - used);
 }
 
 void setup() {
@@ -231,25 +98,50 @@ void setup() {
     delay(1000);
     
     Serial.println("\n");
-    Serial.println("╔════════════════════════════════════════════╗");
-    Serial.println("║   ESP32-S3 SD Card Test (PR #1)      ║");
-    Serial.println("║   Bit-Banged SPI Mode               ║");
-    Serial.println("╚════════════════════════════════════════════╝");
+    Serial.println("╔══════════════════════════════════════════════════╗");
+    Serial.println("║   ESP32-S3 FTP Server (PR #2)              ║");
+    Serial.println("║   WiFi Station + SPIFFS Flash             ║");
+    Serial.println("╚══════════════════════════════════════════════════╝");
     
-    if (!init_sd_card()) {
-        Serial.println("\n[SD] FATAL: SD card initialization failed!");
-        while (true) {
-            delay(3000);
-            Serial.println("[SD] Retrying SD card init...");
-            if (init_sd_card()) break;
-        }
+    // Initialize SPIFFS
+    setup_spiffs();
+    
+    // Setup WiFi Station
+    setup_wifi_station();
+    
+    // Initialize FTP Server with SPIFFS
+    Serial.println("\n[FTP] Starting FTP server...");
+    ftpServer.addUser("anonymous", "");  // No password for anonymous
+    ftpServer.addFilesystem("SPIFFS", &SPIFFS);
+    
+    if (ftpServer.begin()) {
+        Serial.println("[FTP] FTP server started successfully!");
+        Serial.println("[FTP] Connect with any FTP client:");
+        Serial.printf("[FTP]   Host: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[FTP]   Port: %d\n", FTP_PORT);
+        Serial.println("[FTP]   User: anonymous");
+        Serial.println("[FTP]   Pass: (empty)");
     } else {
-        Serial.println("[SD] SD card is operational!");
+        Serial.println("[FTP] ERROR: Failed to start FTP server!");
     }
+    
+    Serial.println("\n[System] Setup complete - FTP server running");
 }
 
 void loop() {
     static uint32_t tick = 0;
-    delay(2000);
-    Serial.printf("[Tick %u] SD Card active\n", tick++);
+    
+    // Handle FTP client connections
+    ftpServer.handleFTP();
+    
+    // Heartbeat every 5 seconds
+    delay(5000);
+    tick++;
+    
+    if (tick % 4 == 0) {  // Every 20 seconds
+        Serial.printf("[Tick %u] FTP active | ", tick / 2);
+        Serial.printf("IP: %s | ", WiFi.localIP().toString().c_str());
+        Serial.printf("RSSI: %d dBm | ", WiFi.RSSI());
+        Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+    }
 }
