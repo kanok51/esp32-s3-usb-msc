@@ -61,16 +61,13 @@ void setup()
     if (sd_ok) {
         Serial.println("[Main] SD card ready");
 
-        // PR #5: Enable MSC if persisted setting says so
-        const settings_t *s = settings_get();
-        if (s->msc_enabled) {
-            if (usb_msc_sd_begin()) {
-                Serial.println("[Main] MSC auto-enabled from saved settings");
-            } else {
-                Serial.println("[Main] MSC auto-enable failed");
-            }
+        // PR #5: Enable MSC for testing (will be controlled by settings in final version)
+        Serial.println("[Main] Enabling MSC for PR #5 validation...");
+        if (usb_msc_sd_begin()) {
+            Serial.println("[Main] MSC enabled successfully");
+            app_state_set_msc_enabled(true);
         } else {
-            Serial.println("[Main] MSC disabled (per saved settings)");
+            Serial.println("[Main] MSC enable failed");
         }
     } else {
         Serial.println("[Main] No SD card — services will be limited");
