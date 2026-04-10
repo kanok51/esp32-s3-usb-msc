@@ -5,6 +5,7 @@
  * PR #2: SD card module
  * PR #3: App state model
  * PR #4: Settings persistence (NVS)
+ * PR #5: Read-only MSC module
  */
 
 #include <Arduino.h>
@@ -13,6 +14,7 @@
 #include "app_state.h"
 #include "sd_card.h"
 #include "settings_store.h"
+#include "usb_msc_sd.h"
 #include "config.h"
 
 static sd_card_config_t sd_cfg = {
@@ -58,6 +60,18 @@ void setup()
 
     if (sd_ok) {
         Serial.println("[Main] SD card ready");
+
+        // PR #5: Enable MSC if persisted setting says so
+        const settings_t *s = settings_get();
+        if (s->msc_enabled) {
+            if (usb_msc_sd_begin()) {
+                Serial.println("[Main] MSC auto-enabled from saved settings");
+            } else {
+                Serial.println("[Main] MSC auto-enable failed");
+            }
+        } else {
+            Serial.println("[Main] MSC disabled (per saved settings)");
+        }
     } else {
         Serial.println("[Main] No SD card — services will be limited");
     }
