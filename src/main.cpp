@@ -2,12 +2,14 @@
  * ESP32-S3 SD / Read-Only MSC / FTP / Web UI
  *
  * PR #1: Project skeleton
- * PR #2: SD card module (FSPI, Arduino SD library)
+ * PR #2: SD card module
+ * PR #3: App state model
  */
 
 #include <Arduino.h>
 #include <SD.h>
 
+#include "app_state.h"
 #include "sd_card.h"
 #include "config.h"
 
@@ -31,11 +33,17 @@ void setup()
     Serial.println("========================================");
     Serial.println();
 
+    // PR #3: Initialize app state (all services disabled)
+    app_state_init();
+
     // PR #2: SD card init
-    if (sd_card_init(&sd_cfg)) {
-        Serial.println("[SD] Ready for next modules");
+    bool sd_ok = sd_card_init(&sd_cfg);
+    app_state_set_sd_ready(sd_ok);
+
+    if (sd_ok) {
+        Serial.println("[Main] SD card ready");
     } else {
-        Serial.println("[SD] WARNING: No SD card - will continue without storage");
+        Serial.println("[Main] No SD card - services will be limited");
     }
 }
 
