@@ -26,6 +26,13 @@ from pathlib import Path
 def wait_for_serial_log(port: str, baud: int, expected: str, timeout: float = 10.0) -> bool:
     """Wait for expected string in serial log."""
     ser = serial.Serial(port, baud, timeout=0.5)
+    
+    # Trigger a reset to see boot messages
+    ser.setDTR(False)
+    time.sleep(0.1)
+    ser.setDTR(True)
+    time.sleep(1.5)  # Wait for boot
+    
     ser.reset_input_buffer()
     start = time.time()
     
@@ -36,6 +43,7 @@ def wait_for_serial_log(port: str, baud: int, expected: str, timeout: float = 10
             if expected.lower() in line.lower():
                 ser.close()
                 return True
+        time.sleep(0.05)
     ser.close()
     return False
 
@@ -43,7 +51,7 @@ def wait_for_serial_log(port: str, baud: int, expected: str, timeout: float = 10
 def test_msc_enable(port: str, baud: int) -> bool:
     """Test: MSC enable logs appear."""
     print("\n=== Test: MSC Enable ===")
-    result = wait_for_serial_log(port, baud, "MSC Enabled")
+    result = wait_for_serial_log(port, baud, "Enabled (read-only)")
     print(f"Result: {'PASS' if result else 'FAIL'}\n")
     return result
 
