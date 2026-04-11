@@ -6,15 +6,18 @@
  * PR #3: App state model
  * PR #4: Settings persistence (NVS)
  * PR #5: Read/Write MSC module
+ * PR #6: FTP service module
  */
 
 #include <Arduino.h>
 #include <SD.h>
+#include <WiFi.h>
 
 #include "app_state.h"
 #include "sd_card.h"
 #include "settings_store.h"
 #include "usb_msc_sd.h"
+#include "ftp_service.h"
 #include "config.h"
 
 static sd_card_config_t sd_cfg = {
@@ -25,6 +28,29 @@ static sd_card_config_t sd_cfg = {
     .freq_hz = APP_SD_FREQ_HZ,
     .mount_point = APP_SD_MOUNT_POINT
 };
+
+static bool wifi_connect(void)
+{
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(APP_WIFI_SSID, APP_WIFI_PASSWORD);
+    
+    Serial.print("[WiFi] Connecting");
+    const uint32_t timeout = 30000; // 30 seconds
+    const uint32_t start = millis();
+    
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print('.');
+        if (millis() - start > timeout) {
+            Serial.println("\n[WiFi] Connection timeout");
+            return false;
+        }
+    }
+    
+    Serial.println();
+    Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
+    return true;
+}
 
 void setup()
 {
@@ -68,9 +94,32 @@ void setup()
         // PR #5: Enable MSC if persisted setting says so
         if (usb_msc_sd_begin()) {
                 Serial.println("[Main] MSC auto-enabled from saved settings");
+                ftp_service_set_msc_enabled(true);  // Tell FTP service MSC is active
             } else {
                 Serial.println("[Main] MSC auto-enable failed");
             }
+        
+        // PR #6: Initialize FTP service
+        ftp_service_init();
+        
+        // Connect WiFi and start FTP
+        if (wifi_connect()) {
+            app_state_set_wifi_connected(true);
+            
+            // For testing: auto-enable FTP
+            ftp_service_config_t ftp_cfg = {
+                .ftp_user = "esp32",
+                .ftp_password = "esp32pass",
+                .ftp_port = 21
+            };
+            if (ftp_service_begin(&ftp_cfg)) {
+                Serial.printf("[Main] FTP ready at ftp://%s\n", WiFi.localIP().toString().c_str());
+            } else {
+                Serial.println("[Main] FTP start failed");
+            }
+        } else {
+            Serial.println("[Main] WiFi connection failed - FTP not started");
+        }
     } else {
         Serial.println("[Main] No SD card — services will be limited");
     }
@@ -78,6 +127,8 @@ void setup()
 
 void loop()
 {
-  Serial.println("alive");
-  delay(1000);
+    // PR #6: Poll FTP server
+    ftp_service_poll();
+    
+    delay(10);
 }
