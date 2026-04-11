@@ -10,43 +10,119 @@ static bool g_msc_started = false;
 static bool g_usb_started = false;
 static bool g_host_active = false;
 
+// Temporary sector buffer for partial reads
+static uint8_t g_sector_buf[512];
+static int g_read_log_count = 0;
+static int g_write_log_count = 0;
+
+
 static int32_t usb_msc_read_cb_impl(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize)
 {
     const uint32_t sector_size = SD.sectorSize();
-    if (sector_size == 0 || offset != 0 || (bufsize % sector_size) != 0) {
+    if (sector_size == 0 || buffer == nullptr || sector_size > sizeof(g_sector_buf)) {
+        Serial.println("[MSC] read: invalid geometry/buffer");
         return -1;
     }
 
-    uint8_t *dst = static_cast<uint8_t *>(buffer);
-    const uint32_t sector_count = bufsize / sector_size;
-
-    for (uint32_t i = 0; i < sector_count; ++i) {
-        if (!SD.readRAW(dst + (i * sector_size), lba + i)) {
-            return -1;
-        }
+    if (g_read_log_count < 40) {
+        Serial.printf("[MSC] READ lba=%lu offset=%lu bufsize=%lu\n",
+                      (unsigned long)lba,
+                      (unsigned long)offset,
+                      (unsigned long)bufsize);
+        g_read_log_count++;
     }
 
-    g_host_active = true;
-    return static_cast<int32_t>(bufsize);
+    uint8_t *dst = static_cast<uint8_t *>(buffer);
+    uint32_t remaining = bufsize;
+    uint32_t current_lba = lba;
+    uint32_t current_offset = offset;
+
+    while (remaining > 0) {
+        if (current_offset >= sector_size) {
+            current_lba += current_offset / sector_size;
+            current_offset %= sector_size;
+        }
+
+        if (!SD.readRAW(g_sector_buf, current_lba)) {
+            Serial.printf("[MSC] readRAW failed at lba=%lu\n", (unsigned long)current_lba);
+            return -1;
+        }
+
+        const uint32_t chunk = min(remaining, sector_size - current_offset);
+        memcpy(dst, &g_sector_buf[current_offset], chunk);
+
+        dst += chunk;
+        remaining -= chunk;
+        current_lba++;
+        current_offset = 0;
+    }
+
+    return (int32_t)bufsize;
 }
 
 static int32_t usb_msc_write_cb_impl(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize)
 {
     const uint32_t sector_size = SD.sectorSize();
-    if (sector_size == 0 || offset != 0 || (bufsize % sector_size) != 0) {
+    if (sector_size == 0 || buffer == nullptr || sector_size > sizeof(g_sector_buf)) {
+        Serial.println("[MSC] write: invalid geometry/buffer");
         return -1;
     }
 
-    const uint32_t sector_count = bufsize / sector_size;
-
-    for (uint32_t i = 0; i < sector_count; ++i) {
-        if (!SD.writeRAW(buffer + (i * sector_size), lba + i)) {
-            return -1;
-        }
+    if (g_write_log_count < 40) {
+        Serial.printf("[MSC] WRITE lba=%lu offset=%lu bufsize=%lu\n",
+                      (unsigned long)lba,
+                      (unsigned long)offset,
+                      (unsigned long)bufsize);
+        g_write_log_count++;
     }
 
-    g_host_active = true;
-    return static_cast<int32_t>(bufsize);
+    uint32_t remaining = bufsize;
+    uint32_t current_lba = lba;
+    uint32_t current_offset = offset;
+    const uint8_t *src = buffer;
+
+    while (remaining > 0) {
+        if (current_offset >= sector_size) {
+            current_lba += current_offset / sector_size;
+            current_offset %= sector_size;
+        }
+
+        // Fast path: full aligned sector write
+        if (current_offset == 0 && remaining >= sector_size) {
+            if (!SD.writeRAW((uint8_t *)src, current_lba)) {
+                Serial.printf("[MSC] writeRAW failed at lba=%lu\n", (unsigned long)current_lba);
+                return -1;
+            }
+
+            src += sector_size;
+            remaining -= sector_size;
+            current_lba++;
+            continue;
+        }
+
+        // Partial-sector write: read-modify-write
+        if (!SD.readRAW(g_sector_buf, current_lba)) {
+            Serial.printf("[MSC] readRAW before partial write failed at lba=%lu\n",
+                          (unsigned long)current_lba);
+            return -1;
+        }
+
+        const uint32_t chunk = min(remaining, sector_size - current_offset);
+        memcpy(&g_sector_buf[current_offset], src, chunk);
+
+        if (!SD.writeRAW(g_sector_buf, current_lba)) {
+            Serial.printf("[MSC] partial writeRAW failed at lba=%lu\n",
+                          (unsigned long)current_lba);
+            return -1;
+        }
+
+        src += chunk;
+        remaining -= chunk;
+        current_lba++;
+        current_offset = 0;
+    }
+
+    return (int32_t)bufsize;
 }
 
 static bool usb_msc_start_stop_cb_impl(uint8_t power_condition, bool start, bool load_eject)
@@ -56,6 +132,7 @@ static bool usb_msc_start_stop_cb_impl(uint8_t power_condition, bool start, bool
 
     if (load_eject) {
         g_host_active = false;
+        Serial.println("[MSC] Host ejected");
     }
 
     return true;
@@ -64,50 +141,83 @@ static bool usb_msc_start_stop_cb_impl(uint8_t power_condition, bool start, bool
 bool usb_msc_sd_begin(void)
 {
     if (g_msc_started) {
+        Serial.println("[MSC] Already active");
         return true;
     }
 
     if (SD.cardType() == CARD_NONE) {
+        Serial.println("[MSC] ERROR: SD not ready");
         return false;
     }
 
-    g_msc.vendorID("VCC-GND");
+    g_msc.vendorID("Espressif");
     g_msc.productID("ESP32S3-SD");
     g_msc.productRevision("1.0");
     g_msc.onRead(usb_msc_read_cb_impl);
     g_msc.onWrite(usb_msc_write_cb_impl);
     g_msc.onStartStop(usb_msc_start_stop_cb_impl);
-
     g_msc.mediaPresent(true);
 
     if (!g_msc.begin(SD.numSectors(), SD.sectorSize())) {
+        Serial.println("[MSC] ERROR: g_msc.begin() failed");
         return false;
     }
 
     if (!g_usb_started) {
         USB.begin();
         g_usb_started = true;
+        delay(10);
     }
 
     g_msc_started = true;
     g_host_active = false;
+    Serial.printf("[MSC] Enabled (read/write): %u sectors x %u bytes\n", SD.numSectors(), SD.sectorSize());
     return true;
 }
 
 void usb_msc_sd_end(void)
 {
     if (!g_msc_started) {
+        Serial.println("[MSC] Already inactive");
         return;
     }
 
     g_msc.mediaPresent(false);
     delay(250);
-
     g_msc.end();
     delay(150);
 
     g_msc_started = false;
     g_host_active = false;
+    Serial.println("[MSC] Disabled");
+}
+
+bool usb_msc_sd_refresh(void)
+{
+    Serial.println("[MSC] Refresh requested");
+
+    if (!g_msc_started) {
+        Serial.println("[MSC] Refresh skipped (not active)");
+        return false;
+    }
+
+    // Disable
+    g_msc.mediaPresent(false);
+    delay(250);
+    g_msc.end();
+    delay(150);
+
+    // Re-enable
+    g_msc.mediaPresent(true);
+    if (!g_msc.begin(SD.numSectors(), SD.sectorSize())) {
+        Serial.println("[MSC] ERROR: Re-begin failed");
+        g_msc_started = false;
+        return false;
+    }
+
+    g_host_active = false;
+    Serial.println("[MSC] Refreshed (re-enumerated)");
+    return true;
 }
 
 bool usb_msc_sd_is_active(void)
