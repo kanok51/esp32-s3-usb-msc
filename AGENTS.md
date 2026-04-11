@@ -15,11 +15,12 @@ If there is a conflict, follow the requirements file first.
 - Use **PlatformIO**
 - Do not migrate this project to ESP-IDF in the current phase
 - Keep `platformio.ini` as the primary build entry point
+- working_example directoy is untoucahable
 
 ## Current architecture
 
 - One SD card FAT filesystem
-- USB MSC must be **read-only**
+- USB MSC must be **read/write**
 - FTP reads/writes the same SD filesystem
 - Web UI must support:
   - enable MSC
@@ -46,7 +47,7 @@ Before considering work complete, verify as applicable:
 - Serial logs are clear for boot and service state changes
 - FTP upload works using the Python test script
 - MSC is visible from the development PC when enabled
-- MSC is read-only from the host side
+- MSC is **read/write** from the host side
 - Newly uploaded FTP files appear after MSC refresh
 
 ## Board workflow notes

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Test script for PR #5: Read-only MSC module
+Test script for PR #5: Read/write MSC module (legacy name)
+
+NOTE: This script was originally for read-only MSC testing.
+The project now uses read/write MSC. Use test_msc_readwrite.py instead.
 
 Tests:
 1. usb_msc_sd_begin() - MSC enables successfully
 2. usb_msc_sd_end() - MSC disables cleanly
 3. usb_msc_sd_refresh() - MSC re-enumerates
-4. Read-only behavior - host cannot write to MSC drive
+4. Read/write behavior - host can read and write to MSC drive
 
 Usage:
-    python3 scripts/test_msc_readonly.py --port /dev/cu.usbmodem53140032081 --mount-path /Volumes/ESP32-SD
+    python3 scripts/test_msc_readwrite.py --port /dev/cu.usbmodem53140032081 --mount-path /Volumes/TEST
 
 Dependencies:
     pip install pyserial
@@ -51,7 +54,7 @@ def wait_for_serial_log(port: str, baud: int, expected: str, timeout: float = 10
 def test_msc_enable(port: str, baud: int) -> bool:
     """Test: MSC enable logs appear."""
     print("\n=== Test: MSC Enable ===")
-    result = wait_for_serial_log(port, baud, "Enabled (read-only)")
+    result = wait_for_serial_log(port, baud, "MSC] Enabled")
     print(f"Result: {'PASS' if result else 'FAIL'}\n")
     return result
 
@@ -115,6 +118,8 @@ def main():
     
     # Test 1: MSC enable logged
     enable_ok = test_msc_enable(args.port, args.baud)
+
+    time.sleep(20)  # Wait a bit before next test
     
     # Test 2: Read-only behavior (if mount path provided)
     readonly_ok = test_readonly_behavior(args.mount_path) if args.mount_path else True

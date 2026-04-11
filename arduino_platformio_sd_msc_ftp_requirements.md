@@ -1,10 +1,10 @@
-# Arduino + PlatformIO Requirements for ESP32-S3 SD / Read-Only MSC / FTP / Web UI
+# Arduino + PlatformIO Requirements for ESP32-S3 SD / Read/write MSC / FTP / Web UI
 
 ## 1. Purpose
 
 Build firmware for **ESP32-S3** using the **Arduino framework** and **PlatformIO** that uses a **SPI-connected microSD card** and provides:
 
-- a **USB MSC device** exposing the SD card to a host PC as **read-only**
+- a **USB MSC device** exposing the SD card to a host PC as **Read/write**
 - an **FTP server** that reads and writes files on the same SD card filesystem
 - a **web UI** for system control and status
 - persistent settings so MSC/FTP enable states survive reboot
@@ -21,7 +21,7 @@ This project shall use:
 - **Arduino framework**
 - **PlatformIO**
 - **one FAT filesystem on the SD card**
-- **MSC exported as read-only**
+- **MSC exported as Read/write**
 - **FTP operating on the same filesystem**
 - **web UI to enable/disable MSC and FTP**
 - **web UI action to refresh/re-enumerate MSC**
@@ -40,7 +40,6 @@ Agents should follow example code for MSC, FTP, SD_CARD from working_example/src
 A one-partition design is acceptable here because:
 
 - the current Arduino codebase already has working SD, MSC, and FTP functionality
-- read-only MSC removes the biggest corruption risk from host-side writes
 - this architecture is simpler and faster to implement than a two-partition direct-FatFs ESP-IDF design
 
 Known limitation:
@@ -97,10 +96,10 @@ Use the known-good SPI pin set:
 ## 6.2 Filesystem model
 - the SD card shall contain one normal FAT filesystem
 - FTP shall read/write files on that filesystem
-- MSC shall expose that same filesystem to the host as **read-only**
+- MSC shall expose that same filesystem to the host as **Read/write**
 
 ## 6.3 Ownership model
-- host PC must not be allowed to write through MSC
+- host PC is allowed to write through MSC
 - firmware may write through FTP and local code
 - firmware must be aware that the host may not immediately detect file updates
 - therefore **Refresh MSC** is a required action
@@ -123,8 +122,8 @@ On boot:
 
 ## 7.2 MSC behavior
 - MSC can be enabled or disabled via web UI
-- MSC shall be exported as **read-only**
-- host writes must not modify the card
+- MSC shall be exported as **Read/write**
+- host writes must modify the card
 - when disabling MSC:
   - perform best-effort clean detach
 - when enabling MSC:
@@ -215,18 +214,12 @@ Required capabilities:
 - end MSC
 - set media present state
 - read callback for sectors
-- write callback must reject writes or otherwise behave as read-only
+- write callback for sectors
 
-## 10.2 Read-only requirement
-The exposed USB MSC drive must be read-only from the host side.
-
-Acceptable implementation approaches:
-- reject write requests
-- or report a read-only medium if the stack/library supports it cleanly
 
 Goal:
 - the development PC must be able to browse and copy files from the drive
-- the host must not be able to modify files on the SD card via MSC
+- the host must be able to modify files on the SD card via MSC
 
 ## 10.3 Refresh MSC behavior
 A dedicated function shall:
@@ -303,7 +296,7 @@ Recommended module roles:
 - `sd_card`
   - SD SPI init and filesystem availability
 - `usb_msc_sd`
-  - MSC read-only export, enable/disable, refresh
+  - MSC read/write export, enable/disable, refresh
 - `ftp_service`
   - FTP server lifecycle and SD-backed file access
 - `web_ui`
@@ -330,9 +323,9 @@ Goal:
 - central runtime state
 - persist MSC/FTP enable flags
 
-## Phase 4: Read-only MSC service
+## Phase 4: Read/write MSC service
 Goal:
-- expose SD to host as read-only USB MSC
+- expose SD to host as Read/write USB MSC
 - enable/disable/refresh support
 
 ## Phase 5: FTP service
@@ -364,7 +357,7 @@ The project is minimally successful when all of the following work:
 1. Device boots under PlatformIO + Arduino
 2. SD card mounts successfully
 3. MSC can be enabled from the web UI
-4. MSC is read-only on the host PC
+4. MSC is Read/write on the host PC
 5. FTP can be enabled from the web UI
 6. FTP can upload a file to the SD card
 7. After MSC refresh, the host PC can see newly uploaded files
@@ -425,7 +418,7 @@ The development PC should be used as an MSC host.
 
 Agents should verify:
 - host sees the MSC drive when enabled
-- host cannot write to the drive
+- host can write to the drive
 - host can read/copy files from it
 - after FTP upload, host may need MSC refresh to see new files
 
@@ -488,7 +481,7 @@ Final simplified architecture for this phase:
 
 - **Arduino + PlatformIO**
 - **one FAT SD partition**
-- **MSC read-only**
+- **MSC Read/write**
 - **FTP read/write on same filesystem**
 - **web UI for enable/disable MSC**
 - **web UI for enable/disable FTP**

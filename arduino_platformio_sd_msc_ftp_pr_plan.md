@@ -1,8 +1,8 @@
-# PR Plan for Arduino + PlatformIO ESP32-S3 SD / Read-Only MSC / FTP / Web UI Project
+# PR Plan for Arduino + PlatformIO ESP32-S3 SD / Read/write MSC / FTP / Web UI Project
 
 This PR plan is based on the simplified Arduino architecture:
 - one SD filesystem
-- read-only MSC
+- Read/write MSC
 - FTP on same filesystem
 - web UI controls
 - persisted service states
@@ -86,10 +86,10 @@ Persist service enable flags across reboot.
 
 ---
 
-## PR 5 — Read-only MSC module
+## PR 5 — Read/write MSC module
 
 ### Goal
-Expose the SD card to the host as read-only USB MSC.
+Expose the SD card to the host as Read/write USB MSC.
 
 ### Scope
 - Add `usb_msc_sd.h/.cpp`
@@ -98,13 +98,13 @@ Expose the SD card to the host as read-only USB MSC.
   - end MSC
   - refresh MSC
   - read callback
-  - reject/ignore write callback so host cannot write
+  - write callback
 - Keep logs for enable/disable/refresh
 
 ### Acceptance
 - host PC sees drive
 - host can read files
-- host cannot write files
+- host can write files
 
 ---
 
@@ -247,7 +247,7 @@ Add maintenance actions if still needed.
 2. PR 2 — SD card module
 3. PR 3 — App state
 4. PR 4 — Settings persistence
-5. PR 5 — Read-only MSC module
+5. PR 5 — Read/write MSC module
 6. PR 6 — FTP service
 7. PR 7 — Web UI skeleton
 8. PR 8 — Web UI MSC controls
@@ -263,6 +263,5 @@ Add maintenance actions if still needed.
 - Stay on **Arduino + PlatformIO**
 - Do not migrate to ESP-IDF in this phase
 - Preserve the already working SD/MSC/FTP direction
-- Keep MSC **read-only**
 - Assume the host may require **Refresh MSC** after FTP uploads
 - Use serial logs, Python FTP tests, and host-side MSC checks as standard validation
