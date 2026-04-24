@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <SD.h>
 
 struct sd_card_config_t {
     int sck;

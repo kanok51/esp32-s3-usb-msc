@@ -1,7 +1,6 @@
 #include "sd_card.h"
 
 #include <SPI.h>
-#include <SD.h>
 
 static SPIClass g_spi(FSPI);
 static sd_card_config_t g_cfg = {};

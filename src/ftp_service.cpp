@@ -4,9 +4,9 @@
 #include <WiFi.h>
 #include <SD.h>
 
-// SimpleFTPServer library
+// SimpleFTPServer library - MUST set storage type BEFORE including header
 #define DEFAULT_FTP_SERVER_NETWORK_TYPE_ESP32 NETWORK_ESP32
-#define DEFAULT_STORAGE_TYPE_ESP32 STORAGE_SD
+#define DEFAULT_STORAGE_TYPE_ESP32 STORAGE_SD  // Use Arduino SD library
 #include <FtpServer.h>
 
 #include "config.h"
@@ -26,6 +26,14 @@ static bool g_ignore_ftp_disconnect = false;
 // Remount SD for filesystem access (after MSC was using it)
 static bool remount_sd_for_fs(void)
 {
+    // FIX: Ensure MSC is completely disabled before attempting SD remount
+    // This prevents SD card contention between MSC and filesystem operations
+    if (usb_msc_sd_is_active()) {
+        Serial.println("[FTP] Stopping MSC before SD remount...");
+        usb_msc_sd_end();
+        delay(300);  // Allow USB MSC cleanup
+    }
+    
     SD.end();
     delay(150);
 
@@ -75,17 +83,38 @@ static void ftp_start_server(const char *user, const char *pass)
     Serial.println("[FTP] Server started");
 }
 
+// FTP transfer callback for debugging
+static void ftp_transfer_callback(FtpTransferOperation op, const char *name, uint32_t transferred_size) {
+    (void)transferred_size;
+    switch (op) {
+        case FTP_UPLOAD_START:
+            Serial.printf("[FTP] Upload start: %s\n", name ? name : "unknown");
+            break;
+        case FTP_DOWNLOAD_START:
+            Serial.printf("[FTP] Download start: %s\n", name ? name : "unknown");
+            break;
+        case FTP_TRANSFER_STOP:
+            Serial.printf("[FTP] Transfer stop: %s\n", name ? name : "unknown");
+            break;
+        case FTP_TRANSFER_ERROR:
+            Serial.printf("[FTP] Transfer error: %s\n", name ? name : "unknown");
+            break;
+        default:
+            break;
+    }
+}
+
 // FTP callback - sets request flags only
 static void ftp_callback(FtpOperation op, uint32_t free_space, uint32_t total_space)
 {
-    (void)free_space;
     (void)total_space;
 
     switch (op) {
         case FTP_CONNECT:
             Serial.println("[FTP] Client connected - requesting FTP mode");
             g_ftp_client_connected = true;
-            if (g_msc_enabled) {
+            // Only request mode switch if MSC is actually active
+            if (usb_msc_sd_is_active()) {
                 g_request_switch_to_ftp_mode = true;
             }
             break;
@@ -101,7 +130,8 @@ static void ftp_callback(FtpOperation op, uint32_t free_space, uint32_t total_sp
             }
             break;
         case FTP_FREE_SPACE_CHANGE:
-            // Not used
+            Serial.printf("[FTP] Free space: %u MB / %u MB\n", 
+                          free_space / (1024*1024), total_space / (1024*1024));
             break;
     }
 }
@@ -119,14 +149,26 @@ bool ftp_service_begin(const ftp_service_config_t *config)
         return true;
     }
 
-    if (SD.cardType() == CARD_NONE) {
-        Serial.println("[FTP] ERROR: SD card not ready");
-        return false;
-    }
-
     if (!WiFi.isConnected()) {
         Serial.println("[FTP] ERROR: WiFi not connected");
         return false;
+    }
+
+    // FIX: Guard against MSC active state - prevent filesystem contention
+    // Must stop MSC before SD can be used for filesystem operations
+    if (usb_msc_sd_is_active()) {
+        Serial.println("[FTP] MSC is active - stopping MSC before FTP can start");
+        usb_msc_sd_end();
+        delay(300);  // Allow MSC cleanup
+        
+        // REMOUNT SD for filesystem access (only needed if MSC was active)
+        Serial.println("[FTP] Remounting SD for FTP access...");
+        if (!remount_sd_for_fs()) {
+            Serial.println("[FTP] ERROR: SD remount failed");
+            return false;
+        }
+    } else {
+        Serial.println("[FTP] MSC not active - using existing SD mount");
     }
 
     const char *user = (config && config->ftp_user) ? config->ftp_user : "esp32";
@@ -134,6 +176,7 @@ bool ftp_service_begin(const ftp_service_config_t *config)
 
     // Set callback
     g_ftp.setCallback(ftp_callback);
+    g_ftp.setTransferCallback(ftp_transfer_callback);
     
     // Start FTP server
     ftp_start_server(user, pass);
